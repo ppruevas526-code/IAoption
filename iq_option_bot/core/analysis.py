@@ -1,0 +1,40 @@
+"""Análisis integrado de un par: une régimen, IA y contexto de velas."""
+import pandas as pd
+
+from core.regime_detector import DetectorRegimen
+from core.candle_analyzer import AnalizadorVelas
+
+
+def analizar_activo(activo, velas, selector_ia):
+    """Analiza un activo con IA y devuelve señal + contexto"""
+    df = pd.DataFrame(velas, columns=['timestamp', 'open', 'close', 'high', 'low', 'volume'])
+    df = df.sort_values('timestamp').reset_index(drop=True)
+
+    if len(df) < 30:
+        return {
+            'activo': activo,
+            'señal': 'ESPERAR',
+            'confianza': 0,
+            'regimen': 'DESCONOCIDO',
+            'estrategia': None,
+            'precio': df['close'].iloc[-1] if len(df) else 0,
+            'detalles': {}
+        }
+
+    regimen = DetectorRegimen.detectar(df)
+    señal, confianza, estrategia, detalles = selector_ia.analizar_con_ia(df, regimen)
+
+    anatomia = AnalizadorVelas.anatomia_vela(df)
+    estructura = AnalizadorVelas.estructura_mercado(df)
+
+    return {
+        'activo': activo,
+        'señal': señal,
+        'confianza': confianza,
+        'regimen': regimen,
+        'estrategia': estrategia,
+        'precio': df['close'].iloc[-1],
+        'estructura': estructura,
+        'anatomia': anatomia,
+        'detalles': detalles
+    }

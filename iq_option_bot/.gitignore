@@ -1,0 +1,5 @@
+.env
+__pycache__/
+*.pyc
+data/ia_memoria.json
+venv/
