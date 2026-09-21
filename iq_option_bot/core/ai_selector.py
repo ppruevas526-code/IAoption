@@ -14,10 +14,6 @@ class SelectorEstrategiaIA:
     """
     Selector inteligente que aprende qué estrategia funciona
     mejor según el régimen de mercado.
-
-    Nota: _guardar_memoria() puede llamarse desde hilos de operación
-    en paralelo con el hilo principal, por lo que usa un lock propio
-    para evitar escrituras concurrentes corruptas en el JSON.
     """
 
     def __init__(self, archivo_memoria=None):
@@ -46,8 +42,6 @@ class SelectorEstrategiaIA:
         return {'rendimiento': {}, 'operaciones': []}
 
     def _guardar_memoria(self):
-        """Escritura atómica: escribe a un temporal y luego renombra,
-        así una interrupción a mitad de escritura no corrompe el archivo."""
         tmp = f"{self.archivo}.tmp"
         try:
             with open(tmp, 'w') as f:
@@ -57,8 +51,6 @@ class SelectorEstrategiaIA:
             print(f"⚠️ No se pudo guardar memoria IA: {e}")
 
     def seleccionar(self, regimen):
-        """Selecciona la mejor estrategia para el régimen actual
-        basado en el historial de éxito"""
         recomendadas = {
             "TENDENCIA_ALCISTA": ['tendencia', 'momentum', 'ruptura'],
             "TENDENCIA_BAJISTA": ['tendencia', 'momentum', 'ruptura'],
@@ -69,7 +61,6 @@ class SelectorEstrategiaIA:
         }
 
         candidatas = recomendadas.get(regimen, list(self.estrategias.keys()))
-
         mejor_estrategia = candidatas[0]
         mejor_score = -1
 
@@ -77,13 +68,11 @@ class SelectorEstrategiaIA:
             for nombre in candidatas:
                 clave = f"{regimen}::{nombre}"
                 stats = self.rendimiento.get(clave, {'wins': 0, 'total': 0})
-
                 if stats['total'] >= 3:
                     win_rate = stats['wins'] / stats['total']
                     score = win_rate
                 else:
                     score = 0.5 - (candidatas.index(nombre) * 0.05)
-
                 if score > mejor_score:
                     mejor_score = score
                     mejor_estrategia = nombre
@@ -91,10 +80,7 @@ class SelectorEstrategiaIA:
         return mejor_estrategia, mejor_score
 
     def analizar_con_ia(self, df, regimen):
-        """Ejecuta la mejor estrategia + todas las demás y combina
-        señales usando pesos basados en el historial"""
         mejor_nombre, _ = self.seleccionar(regimen)
-
         señales = {}
         for nombre, func in self.estrategias.items():
             try:
@@ -111,21 +97,16 @@ class SelectorEstrategiaIA:
             for nombre, data in señales.items():
                 if data['señal'] == 'ESPERAR':
                     continue
-
                 clave = f"{regimen}::{nombre}"
                 stats = self.rendimiento.get(clave, {'wins': 0, 'total': 0})
-
                 if stats['total'] >= 3:
                     peso = stats['wins'] / stats['total']
                 else:
                     peso = 0.5
-
                 if nombre == mejor_nombre:
                     peso *= 1.3
-
                 peso *= data['conf']
                 total_peso += peso
-
                 if data['señal'] == 'CALL':
                     votos_call += peso
                 else:
@@ -133,32 +114,23 @@ class SelectorEstrategiaIA:
 
         if total_peso == 0:
             return "ESPERAR", 0, mejor_nombre, señales
-
         if votos_call > votos_put:
-            confianza = votos_call / total_peso
-            return "CALL", confianza, mejor_nombre, señales
+            return "CALL", votos_call / total_peso, mejor_nombre, señales
         elif votos_put > votos_call:
-            confianza = votos_put / total_peso
-            return "PUT", confianza, mejor_nombre, señales
-
+            return "PUT", votos_put / total_peso, mejor_nombre, señales
         return "ESPERAR", 0, mejor_nombre, señales
 
     def registrar_resultado(self, regimen, estrategia, gano):
-        """Registra el resultado para aprendizaje continuo.
-        Se llama desde hilos de operación -> protegido por lock."""
         clave = f"{regimen}::{estrategia}"
         with self._lock:
             if clave not in self.rendimiento:
                 self.rendimiento[clave] = {'wins': 0, 'total': 0}
-
             self.rendimiento[clave]['total'] += 1
             if gano:
                 self.rendimiento[clave]['wins'] += 1
-
             self.memoria['rendimiento'] = self.rendimiento
             wins = self.rendimiento[clave]['wins']
             total = self.rendimiento[clave]['total']
             self._guardar_memoria()
-
         win_rate = wins / total
         print(f"🧠 IA aprendió: {clave} → {win_rate*100:.0f}% éxito ({wins}/{total})")

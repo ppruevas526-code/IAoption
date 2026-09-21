@@ -5,6 +5,7 @@ el bucle principal de análisis.
 """
 import threading
 import time
+import traceback
 
 from utils.errors import formatear_error_orden
 
@@ -12,11 +13,6 @@ from utils.errors import formatear_error_orden
 class GestorOperaciones:
     def __init__(self, api, contador, selector_ia, monto, duracion,
                  on_instrumento_invalido=None):
-        """
-        on_instrumento_invalido: callback opcional (activo) -> None,
-        usado para forzar un refresco de disponibilidad cuando la API
-        rechaza una orden por "invalid instrument".
-        """
         self.api = api
         self.contador = contador
         self.selector_ia = selector_ia
@@ -56,18 +52,30 @@ class GestorOperaciones:
         """Corre en un hilo de fondo: abre la orden, espera su cierre
         y registra el resultado, sin bloquear el análisis de otros pares."""
         try:
-            print(f"🚀 EJECUTANDO {direccion.upper()} en {activo} @ {precio:.5f}")
-            print(f"   🧠 Régimen: {regimen} | Estrategia: {estrategia}")
+            print(f"\n{'='*55}")
+            print(f"🚀 INTENTANDO OPERAR: {direccion.upper()} en {activo}")
+            print(f"   Precio: {precio:.5f}")
+            print(f"   Monto: {self.monto} | Duración: {self.duracion} min")
+            print(f"   Régimen: {regimen} | Estrategia: {estrategia}")
+            print(f"{'='*55}")
 
+            # --- Paso 1: Intentar abrir la orden ---
             try:
-                status, orden_id = self.api.buy_digital_spot_v2(activo, self.monto, direccion, self.duracion)
+                print("📤 Enviando orden a IQ Option...")
+                status, orden_id = self.api.buy(
+                    self.monto, activo, direccion, self.duracion
+                )
+                print(f"📥 Respuesta de IQ Option: status={status}, id={orden_id}")
             except Exception as e:
-                print(f"❌ Error al ejecutar en {activo}: {e}")
+                print(f"❌ EXCEPCIÓN al ejecutar: {type(e).__name__}: {e}")
+                traceback.print_exc()
                 return
 
+            # --- Paso 2: Verificar si la orden se abrió ---
             if not status:
                 mensaje_legible = formatear_error_orden(orden_id)
-                print(f"❌ No se pudo abrir la orden en {activo}: {mensaje_legible}")
+                print(f"❌ ORDEN RECHAZADA en {activo}: {mensaje_legible}")
+                print(f"   Respuesta cruda: {orden_id}")
 
                 if isinstance(orden_id, dict) and \
                         str(orden_id.get('message', '')).strip().lower() == 'invalid instrument':
@@ -78,23 +86,43 @@ class GestorOperaciones:
                             pass
                 return
 
-            print(f"✅ Orden enviada en {activo} | ID: {orden_id}")
-            time.sleep(self.duracion * 60 + 5)
+            print(f"✅ ORDEN ABIERTA en {activo} | ID: {orden_id}")
+            print(f"⏳ Esperando {self.duracion} min para que cierre...")
 
-            check_close, win_money = self.api.check_win_digital_v2(orden_id)
-            if not check_close:
-                print(f"⚠️ {activo}: no se pudo confirmar el cierre de la orden {orden_id}")
+            # --- Paso 3: Esperar cierre ---
+            tiempo_espera = self.duracion * 60 + 5
+            time.sleep(tiempo_espera)
+            print(f"⏰ Tiempo de espera terminado. Consultando resultado...")
+
+            # --- Paso 4: Consultar resultado ---
+            try:
+                check_close, win_money = self.api.check_win_v2(orden_id)
+                print(f"📥 Resultado: check_close={check_close}, win_money={win_money}")
+            except Exception as e:
+                print(f"❌ EXCEPCIÓN al consultar resultado: {type(e).__name__}: {e}")
+                traceback.print_exc()
                 return
 
+            if not check_close:
+                print(f"⚠️ No se pudo confirmar el cierre de la orden {orden_id}")
+                return
+
+            # --- Paso 5: Registrar resultado ---
             gano = float(win_money) > 0
             if gano:
                 print(f"💰 ¡GANANCIA en {activo}! +{win_money:.2f} USD")
-                self.contador.registrar_resultado_operacion(activo, direccion, precio, orden_id, "ganada", float(win_money))
+                self.contador.registrar_resultado_operacion(
+                    activo, direccion, precio, orden_id, "ganada", float(win_money)
+                )
             else:
                 print(f"📉 Pérdida en {activo}: {self.monto:.2f} USD")
-                self.contador.registrar_resultado_operacion(activo, direccion, precio, orden_id, "perdida", self.monto)
+                self.contador.registrar_resultado_operacion(
+                    activo, direccion, precio, orden_id, "perdida", self.monto
+                )
 
+            print(f"🧠 Registrando resultado en la IA...")
             self.selector_ia.registrar_resultado(regimen, estrategia, gano)
+            print(f"✅ Resultado registrado en la IA")
 
             nuevo_balance = self.api.get_balance()
             if nuevo_balance:
@@ -102,9 +130,12 @@ class GestorOperaciones:
                 print(f"💰 Balance actual: {nuevo_balance:.2f} USD")
 
         except Exception as e:
-            print(f"⚠️ Error en hilo de operación de {activo}: {e}")
+            print(f"⚠️ ERROR GENERAL en hilo de operación de {activo}:")
+            print(f"   {type(e).__name__}: {e}")
+            traceback.print_exc()
         finally:
             self._liberar(activo)
+            print(f"🔓 Activo {activo} liberado\n")
 
     def esperar_pendientes(self, timeout=None):
         """Usado al apagar el bot: espera a que los hilos en vuelo terminen."""
