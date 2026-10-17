@@ -1,5 +1,6 @@
 """
 Bot de trading IA para IQ Option — punto de entrada.
+VERSIÓN FLEXIBLE con IA agresiva.
 """
 import sys
 import time
@@ -7,6 +8,11 @@ import random
 
 import config
 
+def tipo_activo(activo):
+    """Devuelve 'OTC' o 'NORMAL' según el nombre del activo."""
+    if activo.upper().endswith("-OTC"):
+        return "🟡 OTC"
+    return "🔵 NORMAL"
 
 def verificar_dependencias():
     try:
@@ -30,7 +36,6 @@ def verificar_dependencias():
     except ImportError:
         print("⚠️ Scikit-learn no instalado. Usando IA interna simplificada.")
 
-
 def pedir_direccion(activo, senal_sugerida):
     sugerida = "CALL" if senal_sugerida == "CALL" else "PUT"
     print("=" * 55)
@@ -41,9 +46,10 @@ def pedir_direccion(activo, senal_sugerida):
     print("  1. 📈 CALL  (subida / compra)")
     print("  2. 📉 PUT   (bajada / venta)")
     print(f"  3. 🤖 Usar la sugerencia de la IA ({sugerida})")
+    print("  4. 🎲 Aleatorio (deja que el bot decida)")
 
     while True:
-        opcion = input("\n👉 Elige la dirección (1/2/3): ").strip()
+        opcion = input("\n👉 Elige la dirección (1/2/3/4): ").strip()
         if opcion == "1":
             print("✅ Dirección: CALL (subida)\n")
             return "call"
@@ -53,22 +59,25 @@ def pedir_direccion(activo, senal_sugerida):
         elif opcion == "3":
             print(f"✅ Dirección: {sugerida} (sugerencia IA)\n")
             return sugerida.lower()
+        elif opcion == "4":
+            aleatoria = random.choice(["call", "put"])
+            print(f"🎲 Dirección aleatoria: {aleatoria.upper()}\n")
+            return aleatoria
         else:
-            print("❌ Opción inválida. Ingresa 1, 2 o 3.")
-
+            print("❌ Opción inválida. Ingresa 1, 2, 3 o 4.")
 
 def analizar_y_elegir(api, selector_ia, disponibilidad):
     from core.analysis import analizar_activo
 
-    print("\n" + "=" * 55)
+    print("\n" + "=" * 65)
     print("🔎 ANALIZANDO ACTIVOS DISPONIBLES...")
-    print("=" * 55)
+    print("=" * 65)
 
     activos_operables = disponibilidad.obtener()
     if activos_operables:
-        print(f"✅ Operables ahora: {sorted(activos_operables)}")
+        print(f"✅ Operables ahora: {len(activos_operables)} activos")
     else:
-        print("🚫 Ningún activo configurado está operable en este momento.")
+        print("⚠️ Ningún activo reportado como operable (se ignorará por config)")
 
     resultados = []
     for activo in config.ACTIVOS_DISPONIBLES:
@@ -77,51 +86,46 @@ def analizar_y_elegir(api, selector_ia, disponibilidad):
                 activo, config.TIEMPO_VELA, config.CANTIDAD_VELAS, time.time()
             )
             if not velas or len(velas) < 30:
-                print(f"⚠️ {activo}: pocas velas, saltando")
                 continue
 
             resultado = analizar_activo(activo, velas, selector_ia)
-            resultado['operable'] = activo in activos_operables
+            resultado['operable'] = activo in activos_operables or config.IGNORAR_DISPONIBILIDAD
+            resultado['tipo'] = tipo_activo(activo)
             resultados.append(resultado)
 
-            estado = "✅ operable" if resultado['operable'] else "🚫 mercado cerrado"
+            estado = "✅" if resultado['operable'] else "🚫"
             print(
-                f"📊 {activo} | {resultado['señal']} "
+                f"{resultado['tipo']} | 📊 {activo} | {resultado['señal']} "
                 f"({resultado['confianza']*100:.0f}%) | {resultado['regimen']} | {estado}"
             )
-        except Exception as e:
-            print(f"❌ Error analizando {activo}: {e}")
+        except Exception:
+            continue
 
     if not resultados:
         print("❌ No se pudo analizar ningún activo. Saliendo.")
         sys.exit(1)
 
-    candidatos = [r for r in resultados if r['operable'] and r['señal'] != 'ESPERAR']
+    # Ordenar por confianza
+    candidatos = [r for r in resultados if r['operable']]
     candidatos.sort(key=lambda x: x['confianza'], reverse=True)
 
-    print("\n" + "=" * 55)
+    print("\n" + "=" * 65)
     print("🎯 RANKING DE OPORTUNIDADES")
-    print("=" * 55)
+    print("=" * 65)
 
     if not candidatos:
-        print("⏸️ Ningún activo muestra una señal clara en este momento.")
-        if getattr(config, 'MODO_APRENDIZAJE', False):
-            print("   ⚠️ MODO_APRENDIZAJE activo: se elegirá un activo al azar.\n")
-            elegido = random.choice([r['activo'] for r in resultados if r['operable']] or config.ACTIVOS_DISPONIBLES)
-            print(f"🤖 Activo elegido al azar: {elegido}\n")
-            direccion_forzada = random.choice(['call', 'put'])
-            print(f"🎲 Dirección aleatoria: {direccion_forzada.upper()}\n")
-            return [elegido], direccion_forzada
+        print("⏸️ Ningún activo operable.")
         return config.ACTIVOS_DISPONIBLES, None
 
-    for i, r in enumerate(candidatos, 1):
+    # Mostrar top 10
+    for i, r in enumerate(candidatos[:10], 1):
         print(
-            f"  {i}. {r['activo']} → {r['señal']} "
+            f"  {i}. {r['tipo']} | {r['activo']} → {r['señal']} "
             f"(confianza {r['confianza']*100:.0f}%) | {r['regimen']}"
         )
 
-    print(f"  {len(candidatos)+1}. 🤖 Dejar que el bot elija automáticamente el mejor")
-    print(f"  {len(candidatos)+2}. 👀 Vigilar todos los activos sin operar aún")
+    print(f"  {len(candidatos)+1}. 🤖 Dejar que el bot elija automáticamente")
+    print(f"  {len(candidatos)+2}. 👀 Vigilar todos sin operar")
 
     while True:
         try:
@@ -130,14 +134,17 @@ def analizar_y_elegir(api, selector_ia, disponibilidad):
 
             if 0 <= idx < len(candidatos):
                 elegido = candidatos[idx]['activo']
-                print(f"✅ Has elegido operar: {elegido}\n")
+                tipo = candidatos[idx]['tipo']
+                print(f"\n✅ Has elegido operar: {elegido} [{tipo}]")
                 direccion_forzada = pedir_direccion(elegido, candidatos[idx]['señal'])
                 return [elegido], direccion_forzada
 
             elif idx == len(candidatos):
                 elegido = candidatos[0]['activo']
-                print(f"🤖 El bot operará automáticamente: {elegido}\n")
-                return [elegido], candidatos[0]['señal'].lower()
+                tipo = candidatos[0]['tipo']
+                print(f"\n🤖 El bot operará automáticamente: {elegido} [{tipo}]\n")
+                direccion_forzada = pedir_direccion(elegido, candidatos[0]['señal'])
+                return [elegido], direccion_forzada
 
             elif idx == len(candidatos) + 1:
                 print("👀 Modo vigilancia: se analizarán todos sin operar.\n")
@@ -147,7 +154,6 @@ def analizar_y_elegir(api, selector_ia, disponibilidad):
                 print("❌ Número fuera de rango.")
         except ValueError:
             print("❌ Ingresa solo un número.")
-
 
 def main():
     verificar_dependencias()
@@ -196,9 +202,8 @@ def main():
     if getattr(config, 'MODO_APRENDIZAJE', False):
         print(f"🎓 MODO APRENDIZAJE ACTIVADO — la IA aprenderá rápido (solo DEMO)")
     if getattr(config, 'IGNORAR_DISPONIBILIDAD', False):
-        print(f"⚡ IGNORAR_DISPONIBILIDAD activo — el bot intentará operar aunque la API no lo reporte")
+        print(f"⚡ IGNORAR_DISPONIBILIDAD activo")
     print(f"⏱️ Vela: {config.TIEMPO_VELA}s | Duración op: {config.DURACION} min")
-    print(f"🧠 Estrategias IA: {list(selector_ia.estrategias.keys())}")
     print(f"🎯 Confianza mínima: {config.MIN_CONFIANZA_IA*100:.0f}%")
     print("⏳ Comenzando en 5 segundos... (Ctrl+C para detener)")
     time.sleep(5)
@@ -217,9 +222,9 @@ def main():
 
             activos_operables = disponibilidad.obtener()
             if activos_operables:
-                print(f"✅ Operables ahora: {sorted(activos_operables)}")
+                print(f"✅ Operables ahora: {len(activos_operables)} activos")
             else:
-                print("🚫 Ningún activo configurado está operable en este momento.")
+                print("⚠️ Ningún activo reportado como operable (ignorado por config)")
 
             analisis_activos = []
 
@@ -242,7 +247,7 @@ def main():
                         else ""
                     )
                     print(
-                        f"📊 {hora} | {activo} | {resultado['precio']:.5f} | "
+                        f"{tipo_activo(activo)} | 📊 {hora} | {activo} | {resultado['precio']:.5f} | "
                         f"{resultado['señal']} ({resultado['confianza']*100:.0f}%) | "
                         f"Régimen: {resultado['regimen']} | "
                         f"Estrategia: {resultado['estrategia']}{ocupado}"
@@ -261,19 +266,38 @@ def main():
                 contador.mostrar_estadisticas()
 
             # =========================================================
-            # FILTRO DE OPORTUNIDADES
+            # 🔥 FILTRO FLEXIBLE CON IA (VERSIÓN MEJORADA)
             # =========================================================
             if getattr(config, 'MODO_APRENDIZAJE', False):
+                # MODO APRENDIZAJE: incluye TODOS los activos, incluso ESPERAR
                 oportunidades = [
                     a for a in analisis_activos
                     if not gestor_operaciones.esta_ocupado(a['activo'])
                     and (ignorar_disp or a['activo'] in activos_operables)
                 ]
+
+                # 🔥 La IA decide la dirección cuando hay ESPERAR
                 for a in oportunidades:
                     if a['señal'] == 'ESPERAR':
-                        a['señal'] = random.choice(['CALL', 'PUT'])
-                        a['confianza'] = 1.0
+                        if a.get('confianza', 0) >= getattr(config, 'CONFIANZA_IA_PARA_DECIDIR', 0.25):
+                            # Usa el sesgo de la IA según régimen
+                            if a.get('regimen') == 'tendencia_alcista':
+                                a['señal'] = 'CALL'
+                            elif a.get('regimen') == 'tendencia_bajista':
+                                a['señal'] = 'PUT'
+                            else:
+                                a['señal'] = random.choice(['CALL', 'PUT'])
+                        else:
+                            a['señal'] = random.choice(['CALL', 'PUT'])
+
+                        a['confianza'] = max(a.get('confianza', 0), 0.5)
+                        a['estrategia'] = 'IA_APRENDIZAJE'
+
+                oportunidades.sort(key=lambda x: x.get('confianza', 0), reverse=True)
+                print(f"🎓 MODO APRENDIZAJE: {len(oportunidades)} oportunidades forzadas")
+
             else:
+                # MODO NORMAL: respeta la confianza mínima
                 oportunidades = [
                     a for a in analisis_activos
                     if a['señal'] in ('CALL', 'PUT')
@@ -282,6 +306,18 @@ def main():
                     and (ignorar_disp or a['activo'] in activos_operables)
                 ]
 
+            # =========================================================
+            # DEBUG - Ver por qué se filtran
+            # =========================================================
+            print(f"\n🔍 DEBUG DEL FILTRO:")
+            print(f"   Analizados: {len(analisis_activos)}")
+            print(f"   Operables (API): {len(activos_operables) if activos_operables else 0}")
+            print(f"   IGNORAR_DISPONIBILIDAD: {ignorar_disp}")
+            print(f"   MODO_APRENDIZAJE: {getattr(config, 'MODO_APRENDIZAJE', False)}")
+            print(f"   MIN_CONFIANZA_IA: {config.MIN_CONFIANZA_IA}")
+            print(f"   Oportunidades tras filtro: {len(oportunidades)}")
+
+            # Bloqueadas por mercado
             bloqueadas_por_mercado = [
                 a for a in analisis_activos
                 if a['señal'] in ('CALL', 'PUT')
@@ -292,8 +328,7 @@ def main():
             for b in bloqueadas_por_mercado:
                 print(
                     f"⏭️ {b['activo']}: señal {b['señal']} "
-                    f"({b['confianza']*100:.0f}%) válida pero el mercado "
-                    f"no está confirmado como operable. Se omite."
+                    f"({b['confianza']*100:.0f}%) válida pero mercado no confirmado."
                 )
 
             if oportunidades:
@@ -313,10 +348,11 @@ def main():
 
                         if direccion_forzada:
                             direccion = direccion_forzada
-                            print(f"\n🎯 OPORTUNIDAD: {op['activo']} → {direccion.upper()} (forzada por ti)")
+                            print(f"\n🎯 OPORTUNIDAD: {op['activo']} → {direccion.upper()} (forzada)")
                         else:
                             direccion = "call" if op['señal'] == "CALL" else "put"
-                            print(f"\n🎯 OPORTUNIDAD: {op['activo']} → {op['señal']} (confianza {op['confianza']*100:.0f}%)")
+                            print(f"\n🎯 OPORTUNIDAD: {op['activo']} → {op['señal']} "
+                                  f"(confianza {op['confianza']*100:.0f}%)")
 
                         contador.registrar_operacion_iniciada()
                         print(f"📤 Lanzando operación: {op['activo']} {direccion.upper()}")
@@ -326,7 +362,7 @@ def main():
                             op['regimen'], op['estrategia']
                         )
             else:
-                print(f"⏸️ Sin oportunidades nuevas (confianza mínima {config.MIN_CONFIANZA_IA*100:.0f}%)")
+                print(f"⏸️ Sin oportunidades nuevas")
 
             if detenido_por_limite:
                 print("🧭 Esperando a que cierren las operaciones abiertas...")
@@ -348,12 +384,11 @@ def main():
                 gestor_operaciones.esperar_pendientes()
             except KeyboardInterrupt:
                 print("⚠️ Saliendo sin esperar.")
-            print(f"\n🧠 IA aprendió {len(selector_ia.rendimiento)} combinaciones régimen/estrategia")
+            print(f"\n🧠 IA aprendió {len(selector_ia.rendimiento)} combinaciones")
             break
         except Exception as e:
             print(f"❌ ERROR: {e}")
             time.sleep(5)
-
 
 if __name__ == "__main__":
     main()

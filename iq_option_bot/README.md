@@ -37,7 +37,8 @@ pip install -r requirements.txt
 cp .env.example .env
 # Edita .env con tu correo y contraseña de IQ Option
 ```
-
+## activacion venv 
+<!-- source .venv/Scripts/activate -->
 ## Uso
 
 ```bash
